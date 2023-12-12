@@ -3,12 +3,10 @@ import Parser.Char
 import Std.Data.HashMap
 import Init
 
-#check List
-
 open Parser Parser.Char Std
 
 def Coord := Int × Int
-  deriving BEq, Hashable
+  deriving BEq, Hashable, ToString
 def Coord.init : Coord := (0,0)
 
 abbrev PError := Error.Simple Substring Char
@@ -32,7 +30,7 @@ structure Entry where
 
 def Entry.empty : Entry := ⟨none, false⟩
 def Entry.combine : Entry → Entry → Entry
-    | ⟨p₁, s₁⟩, ⟨p₂, s₂⟩ => ⟨Option.merge (Function.const _) p₁ p₂, s₁ && s₂⟩
+    | ⟨p₁, s₁⟩, ⟨p₂, s₂⟩ => ⟨Option.merge (Function.const _) p₁ p₂, s₁ || s₂⟩
 def Entry.isValidPart (entry : Entry) : Bool := entry.part.isSome && entry.symbol
 
 structure Span where
@@ -53,6 +51,7 @@ def Span.mkSymbol (coord : Coord) : Span where
     pure res
 
 def EntryMap := HashMap Coord Entry
+
 def EntryMap.empty : EntryMap := HashMap.empty
 def EntryMap.combine : EntryMap → EntryMap → EntryMap := HashMap.mergeWith (Function.const _ Entry.combine)
 
@@ -75,20 +74,18 @@ def parseEol : P Unit := eol *> incY 1
 def insertSpan (entries : EntryMap) (span : Span) : EntryMap :=
   entries.combine <| HashMap.ofList <| (., span.entry) <$> span.coords
       
-def parseLine : P EntryMap := Parser.foldl insertSpan (pure EntryMap.empty) parseNextEntry <* (parseEol <|> endOfInput)
-def parseLines : P EntryMap := Parser.foldl EntryMap.combine (pure EntryMap.empty) parseLine <* endOfInput
-
-#check HashMap
+def parseLine : P EntryMap := flip insertSpan <$> parseNextEntry <*> (Parser.foldl insertSpan EntryMap.empty parseNextEntry <* (parseEol <|> endOfInput))
+def parseLines : P EntryMap := Parser.foldl EntryMap.combine EntryMap.empty parseLine <* endOfInput
 
 def part1 : IO Unit := do
   IO.println "Day 3 Part 1"
   let input ← IO.FS.readFile "./input/day3"
   match P.run parseLines input with
     | .error err => IO.println err
-    | .ok ⟨_, entries⟩ => 
+    | .ok ⟨_, entries⟩ => do
       entries.filter (Function.const _ Entry.isValidPart) 
-      |>.toList 
-      |>.map (flip Option.getD (Coord.init, 0) ∘ Entry.part ∘ (·.2)) 
-      |> HashMap.ofList 
-      |>.fold (fun sum _ n => sum + n) 0 
-      |> IO.println
+        |>.toList 
+        |>.map (flip Option.getD (Coord.init, 0) ∘ Entry.part ∘ (·.2)) 
+        |> HashMap.ofList 
+        |>.fold (fun sum _ n => sum + n) 0 
+        |> IO.println

@@ -1,7 +1,7 @@
 import Lake
 open Lake DSL
 
-require Parser from git "https://github.com/fgdorais/lean4-parser" @ "main"
+require Parser from git "https://github.com/fgdorais/lean4-parser" @ "foldl"
 require UnicodeBasic from git "https://github.com/fgdorais/lean4-unicode-basic" @ "main"
 require std from git "https://github.com/leanprover/std4" @ "main"
 
