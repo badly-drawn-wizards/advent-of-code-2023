@@ -19,6 +19,9 @@ def Coord.transpose : Coord → Coord
 abbrev PError := Error.Simple Substring Char
 abbrev CoordM := StateT Coord (ExceptT PError IO)
 abbrev P := SimpleParserT Substring Char CoordM
+abbrev SymMap := HashMap Coord Char
+def SymMap.gears : SymMap → SymMap := HashMap.filter (Function.const _ (·=='*')) 
+def SymMap.hasGears : SymMap → Bool := (. |> SymMap.gears |>.size |> (· != 0))
 
 instance monadLiftParserT [Monad m] [Parser.Stream σ α] [Parser.Error ε σ α] : MonadLift m (ParserT ε σ α m) where
   monadLift m state := (·, state) <$> m
@@ -33,29 +36,27 @@ def getCoord : P Coord := liftM <| (get : CoordM _)
 
 structure Entry where
   part : Option (Coord × Nat)
-  symbol : Bool
+  symbols : HashMap Coord Char
 instance : ToString Entry where
   toString
-    | ⟨some _, true⟩ => ";"
-    | ⟨some _, false⟩ => ","
-    | ⟨none, true⟩ => "."
-    | ⟨none, false⟩ => " "
+    | ⟨some _, hsyms⟩ => if SymMap.hasGears hsyms then ";" else "."
+    | ⟨none, hsyms⟩ => if SymMap.hasGears hsyms then "," else " "
 
-def Entry.empty : Entry := ⟨none, false⟩
+def Entry.empty : Entry := ⟨none, HashMap.empty⟩
 def Entry.combine : Entry → Entry → Entry
-    | ⟨p₁, s₁⟩, ⟨p₂, s₂⟩ => ⟨Option.merge (Function.const _) p₁ p₂, s₁ || s₂⟩
-def Entry.isValidPart (entry : Entry) : Bool := entry.part.isSome && entry.symbol
+    | ⟨p₁, s₁⟩, ⟨p₂, s₂⟩ => ⟨Option.merge (Function.const _) p₁ p₂, HashMap.mergeWith (λ _ _ _ => panic "Should not have the same symbol twice") s₁ s₂⟩
+def Entry.isValidPart (entry : Entry) : Bool := entry.part.isSome && entry.symbols.size != 0
 
 structure Span where
   entry : Entry
   coords : List Coord
 
 def Span.mkPart (span : Nat) (n : Nat) (coord : Coord) : Span where
-  entry := ⟨some (coord, n), false⟩
+  entry := ⟨some (coord, n), HashMap.empty⟩
   coords := (flip incX' coord ∘ Int.ofNat) <$> List.range span
 
-def Span.mkSymbol (coord : Coord) : Span where
-  entry := ⟨none, true⟩
+def Span.mkSymbol (s : Char) (coord : Coord) : Span where
+  entry := ⟨none, HashMap.ofList <| List.pure (coord, s)⟩
   coords := Id.run do
     let mut res := []
     for dx in [-1, 0, 1] do
@@ -81,12 +82,13 @@ protected def Char.repeat (c : Char) (n : Nat) : String := String.mk <| List.rep
 
 instance : ToString EntryMap where
   toString em := em 
+    |>.filter (flip <| Function.const _ λ ⟨x, y⟩ => 0 <= x && 0 <= y)
     |>.toArray |>.insertionSort (λ ⟨c₁,_⟩ ⟨c₂,_⟩ => LT.lt c₁.transpose c₂.transpose |> decide)
     |>.slidingMap (λ
       | .none, y => ' '.repeat y.1.1.toNat ++ toString y.2
       | .some x, y => if x.1.2 < y.1.2 
-          then "\n" ++ toString y.1.2 ++ ' '.repeat y.1.1.toNat ++ toString y.2
-          else ' '.repeat (y.1.1.toNat - x.1.1.toNat) ++ toString y.2
+          then "\n" ++ ' '.repeat y.1.1.toNat ++ toString y.2
+          else ' '.repeat (y.1.1.toNat - x.1.1.toNat - 1) ++ toString y.2
         )
     |>.foldl String.append ""
 
@@ -99,7 +101,7 @@ def P.run {α : Type} (parser : P α) (string : String) : IO (Except PError (Coo
     | (Result.error err, _) => throw err
 
 def parseDot : P Unit := incX =<< count (char '.')
-def parseSymbol : P Span := IO.println "#" *> notFollowedBy (char '.' <|> ASCII.numeric <|> eol) *> anyToken *> (Span.mkSymbol <$> getCoord) <* incX 1
+def parseSymbol : P Span := Span.mkSymbol <$> (notFollowedBy (char '.' <|> ASCII.numeric <|> eol) *> anyToken) <*> getCoord <* incX 1
 def parsePart : P Span := do
   let p₁ ← String.Pos.byteIdx <$> getPosition
   let n ← ASCII.parseNat
@@ -127,3 +129,26 @@ def part1 : IO Unit := do
         |> HashMap.ofList 
         |>.fold (fun sum _ n => sum + n) 0 
         |> IO.println
+
+def part2 : IO Unit := do
+  IO.println "Day 3 Part 2"
+  let input ← IO.FS.readFile "./input/day3"
+  match ←P.run parseLines input with
+    | .error err => IO.println err
+    | .ok ⟨_, entries⟩ => do
+      let res := entries.toList 
+        |>.bind (λ 
+          | (_, entry) => 
+            entry.symbols 
+              |> SymMap.gears
+              |>.toList 
+              |>.bind (fun ⟨coord,_⟩ => 
+                ((coord,·) ∘ List.pure) <$> entry.part |>.toList)) 
+        |> flip HashMap.ofListWith List.append 
+        |>.filterMap (λ _ parts => parts |> HashMap.ofList |>.toList |>.map Prod.snd |> Option.some |>.filter (Nat.beq 2 ∘ List.length) |>.map (List.foldl (·*·) 1))
+        |>.toArray 
+        /- |>.insertionSort (λ (c₁,_) (c₂, _) => LT.lt c₁.transpose c₂.transpose) -/
+        |>.map Prod.snd
+        |>.foldl (.+.) 0
+      IO.println res
+
