@@ -7,10 +7,17 @@ open Parser Parser.Char Std
 
 def Coord := Int × Int
   deriving BEq, Hashable, ToString
+instance : LT Coord where
+  lt := Prod.lexLt
+instance (c₁ c₂ : Coord) : Decidable (LT.lt c₁ c₂) := Prod.lexLtDec c₁ c₂
+  
+  
 def Coord.init : Coord := (0,0)
+def Coord.transpose : Coord → Coord
+  | (x, y) => (y, x)
 
 abbrev PError := Error.Simple Substring Char
-abbrev CoordM := StateT Coord (ExceptT PError Id)
+abbrev CoordM := StateT Coord (ExceptT PError IO)
 abbrev P := SimpleParserT Substring Char CoordM
 
 instance monadLiftParserT [Monad m] [Parser.Stream σ α] [Parser.Error ε σ α] : MonadLift m (ParserT ε σ α m) where
@@ -27,6 +34,12 @@ def getCoord : P Coord := liftM <| (get : CoordM _)
 structure Entry where
   part : Option (Coord × Nat)
   symbol : Bool
+instance : ToString Entry where
+  toString
+    | ⟨some _, true⟩ => ";"
+    | ⟨some _, false⟩ => ","
+    | ⟨none, true⟩ => "."
+    | ⟨none, false⟩ => " "
 
 def Entry.empty : Entry := ⟨none, false⟩
 def Entry.combine : Entry → Entry → Entry
@@ -50,39 +63,64 @@ def Span.mkSymbol (coord : Coord) : Span where
         res := ⟨coord.1 + dx, coord.2 + dy⟩ :: res
     pure res
 
+protected def Array.slidingMap (arr : Array α) (f : Option α → α → β) : Array β := Id.run do
+  let mut x := #[]
+  for h : i in [:arr.size] do
+    let prev := match i with
+      | 0 => none
+      | .succ j => arr[j]?
+      
+    let curr := arr[i]'h.upper
+    x := x.push <| f prev curr
+  return x
+    
+
 def EntryMap := HashMap Coord Entry
+
+protected def Char.repeat (c : Char) (n : Nat) : String := String.mk <| List.replicateTR n c
+
+instance : ToString EntryMap where
+  toString em := em 
+    |>.toArray |>.insertionSort (λ ⟨c₁,_⟩ ⟨c₂,_⟩ => LT.lt c₁.transpose c₂.transpose |> decide)
+    |>.slidingMap (λ
+      | .none, y => ' '.repeat y.1.1.toNat ++ toString y.2
+      | .some x, y => if x.1.2 < y.1.2 
+          then "\n" ++ toString y.1.2 ++ ' '.repeat y.1.1.toNat ++ toString y.2
+          else ' '.repeat (y.1.1.toNat - x.1.1.toNat) ++ toString y.2
+        )
+    |>.foldl String.append ""
 
 def EntryMap.empty : EntryMap := HashMap.empty
 def EntryMap.combine : EntryMap → EntryMap → EntryMap := HashMap.mergeWith (Function.const _ Entry.combine)
 
-def P.run {α : Type} (parser : P α) (string : String) : Except PError (Coord × α) := 
+def P.run {α : Type} (parser : P α) (string : String) : IO (Except PError (Coord × α)) := 
   ParserT.run parser string |>.run Coord.init |>.bind λ
     | (Result.ok _ res, coord) => pure (coord, res)
     | (Result.error err, _) => throw err
 
-def parseDot : P Unit := pure () <* char '.' <* incX 1
-def parseSymbol : P Span := notFollowedBy (char '.' <|> ASCII.numeric) *> anyToken *> (Span.mkSymbol <$> getCoord) <* incX 1
+def parseDot : P Unit := incX =<< count (char '.')
+def parseSymbol : P Span := IO.println "#" *> notFollowedBy (char '.' <|> ASCII.numeric <|> eol) *> anyToken *> (Span.mkSymbol <$> getCoord) <* incX 1
 def parsePart : P Span := do
   let p₁ ← String.Pos.byteIdx <$> getPosition
   let n ← ASCII.parseNat
   let p₂ ← String.Pos.byteIdx <$> getPosition
   let span := (p₂ - p₁)
   Span.mkPart span n <$> getCoord <* incX span
-def parseNextEntry : P Span := takeMany parseDot *> (parseSymbol <|> parsePart)
-def parseEol : P Unit := eol *> incY 1
+def parseNextEntry : P Span := parseDot *> (parsePart <|> parseSymbol)
 
 def insertSpan (entries : EntryMap) (span : Span) : EntryMap :=
   entries.combine <| HashMap.ofList <| (., span.entry) <$> span.coords
       
-def parseLine : P EntryMap := flip insertSpan <$> parseNextEntry <*> (Parser.foldl insertSpan EntryMap.empty parseNextEntry <* (parseEol <|> endOfInput))
+def parseLine : P EntryMap := flip insertSpan <$> parseNextEntry <*> (Parser.foldl insertSpan EntryMap.empty parseNextEntry <* parseDot <* (Functor.mapConst () eol <|> lookAhead endOfInput) <* incY 1)
 def parseLines : P EntryMap := Parser.foldl EntryMap.combine EntryMap.empty parseLine <* endOfInput
 
 def part1 : IO Unit := do
   IO.println "Day 3 Part 1"
   let input ← IO.FS.readFile "./input/day3"
-  match P.run parseLines input with
+  match ←P.run parseLines input with
     | .error err => IO.println err
     | .ok ⟨_, entries⟩ => do
+      IO.println entries
       entries.filter (Function.const _ Entry.isValidPart) 
         |>.toList 
         |>.map (flip Option.getD (Coord.init, 0) ∘ Entry.part ∘ (·.2)) 
